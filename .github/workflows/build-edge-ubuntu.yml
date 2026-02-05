@@ -1,25 +1,429 @@
-# .github/workflows/minimal-edge.yml
-name: Minimal Edge ISO Builder
+# .github/workflows/build-edge-ubuntu.yml
+name: Build Edge-Centric Ubuntu
 
-on: [workflow_dispatch]
+on:
+  workflow_dispatch:
+    inputs:
+      ubuntu_version:
+        description: 'Ubuntu version'
+        required: true
+        default: '22.04.3'
+        type: choice
+        options:
+          - '22.04.3'
+          - '22.04.4'
+          - '23.10'
+          - '24.04'
 
 jobs:
-  build:
+  build-iso:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 45
+
     steps:
-    - name: Download Ubuntu
-      run: |
-        wget -O ubuntu.iso https://releases.ubuntu.com/22.04.3/ubuntu-22.04.3-live-server-amd64.iso
-        
-    - name: Create custom ISO
-      run: |
-        # Just rename the ISO for now
-        cp ubuntu.iso edge-ubuntu-22.04.3.iso
-        
-    - name: Upload ISO
-      uses: actions/upload-artifact@v4
-      with:
-        name: edge-ubuntu-iso
-        path: edge-ubuntu-22.04.3.iso
-        retention-days: 5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup build environment
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xorriso \
+            squashfs-tools \
+            isolinux \
+            syslinux \
+            syslinux-utils \
+            genisoimage \
+            wget \
+            curl \
+            gnupg \
+            software-properties-common \
+            p7zip-full \
+            cpio \
+            dosfstools \
+            mtools \
+            unzip \
+            bc \
+            file \
+            rsync
+
+      - name: Determine ISO URL
+        id: iso_info
+        run: |
+          UBUNTU_VERSION="${{ github.event.inputs.ubuntu_version || '22.04.3' }}"
+          
+          if [[ "$UBUNTU_VERSION" == "24.04" ]]; then
+            ISO_URL="https://releases.ubuntu.com/24.04/ubuntu-24.04-live-server-amd64.iso"
+            ISO_NAME="ubuntu-24.04-live-server-amd64.iso"
+          elif [[ "$UBUNTU_VERSION" == "23.10" ]]; then
+            ISO_URL="https://releases.ubuntu.com/23.10/ubuntu-23.10-live-server-amd64.iso"
+            ISO_NAME="ubuntu-23.10-live-server-amd64.iso"
+          else
+            ISO_URL="https://releases.ubuntu.com/22.04/ubuntu-${UBUNTU_VERSION}-live-server-amd64.iso"
+            ISO_NAME="ubuntu-${UBUNTU_VERSION}-live-server-amd64.iso"
+          fi
+          
+          echo "ISO_URL=$ISO_URL" >> $GITHUB_OUTPUT
+          echo "ISO_NAME=$ISO_NAME" >> $GITHUB_OUTPUT
+          echo "CUSTOM_ISO=edge-ubuntu-${UBUNTU_VERSION}-$(date +%Y%m%d-%H%M).iso" >> $GITHUB_OUTPUT
+
+      - name: Download Ubuntu ISO
+        run: |
+          echo "📥 Downloading ${{ steps.iso_info.outputs.ISO_URL }}"
+          wget -q --show-progress \
+            -O "${{ steps.iso_info.outputs.ISO_NAME }}" \
+            "${{ steps.iso_info.outputs.ISO_URL }}"
+          
+          ISO_SIZE=$(stat -c%s "${{ steps.iso_info.outputs.ISO_NAME }}")
+          echo "📊 ISO size: $((ISO_SIZE / 1024 / 1024)) MB"
+
+      - name: Create ISO Customization Script
+        run: |
+          cat > customize-iso.sh << 'SCRIPT_EOF'
+          #!/bin/bash
+          set -ex
+          
+          echo "🚀 Starting ISO customization..."
+          
+          # Configuration
+          INPUT_ISO="${{ steps.iso_info.outputs.ISO_NAME }}"
+          OUTPUT_ISO="${{ steps.iso_info.outputs.CUSTOM_ISO }}"
+          WORK_DIR="$(pwd)/iso-work"
+          EXTRACT_DIR="${WORK_DIR}/extract"
+          CHROOT_DIR="${WORK_DIR}/chroot"
+          
+          # Clean workspace
+          rm -rf "${WORK_DIR}"
+          mkdir -p "${EXTRACT_DIR}" "${CHROOT_DIR}"
+          
+          # Extract ISO
+          echo "📂 Extracting ISO..."
+          7z x -o"${EXTRACT_DIR}" "${INPUT_ISO}"
+          
+          # Extract filesystem
+          echo "🔍 Extracting filesystem..."
+          unsquashfs -f -d "${CHROOT_DIR}" "${EXTRACT_DIR}/casper/filesystem.squashfs"
+          
+          # Prepare chroot environment
+          echo "🏗️ Preparing chroot..."
+          mount --bind /dev "${CHROOT_DIR}/dev"
+          mount --bind /dev/pts "${CHROOT_DIR}/dev/pts"
+          mount --bind /proc "${CHROOT_DIR}/proc"
+          mount --bind /sys "${CHROOT_DIR}/sys"
+          mount --bind /run "${CHROOT_DIR}/run"
+          
+          # Copy resolv.conf for network in chroot
+          cp /etc/resolv.conf "${CHROOT_DIR}/etc/resolv.conf"
+          
+          # Create chroot customization script
+          echo "📝 Creating chroot customization script..."
+          cat > "${CHROOT_DIR}/customize-system.sh" << 'CHROOT_EOF'
+          #!/bin/bash
+          set -ex
+          
+          export DEBIAN_FRONTEND=noninteractive
+          export LC_ALL=C.UTF-8
+          
+          echo "=== Starting Edge-Centric Customization ==="
+          
+          # Update system
+          apt-get update
+          apt-get upgrade -y
+          
+          # Install XFCE desktop (minimal)
+          echo "Installing XFCE desktop..."
+          apt-get install --no-install-recommends -y \
+            xfce4 \
+            xfce4-goodies \
+            xorg \
+            lightdm \
+            lightdm-gtk-greeter \
+            network-manager \
+            network-manager-gnome \
+            plymouth-theme-ubuntu-logo \
+            fonts-noto \
+            fonts-noto-cjk \
+            adwaita-icon-theme-full \
+            dbus-x11 \
+            xdg-utils \
+            xdg-user-dirs
+          
+          # Add Microsoft Edge repository
+          echo "Adding Microsoft Edge repository..."
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /etc/apt/trusted.gpg.d/microsoft.gpg
+          echo "deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main" > /etc/apt/sources.list.d/microsoft-edge.list
+          
+          # Install Microsoft Edge
+          echo "Installing Microsoft Edge..."
+          apt-get update
+          apt-get install -y microsoft-edge-stable
+          
+          # Create edge user
+          echo "Creating edge user..."
+          useradd -m -s /bin/bash -G sudo,adm,dialout,cdrom,floppy,audio,dip,video,plugdev,netdev edge
+          echo "edge:edge" | chpasswd
+          
+          # Configure auto-login
+          echo "Configuring auto-login..."
+          mkdir -p /etc/lightdm/lightdm.conf.d
+          cat > /etc/lightdm/lightdm.conf.d/50-edge-auto.conf << 'LIGHTDM_EOF'
+          [Seat:*]
+          autologin-user=edge
+          autologin-user-timeout=0
+          user-session=xfce
+          greeter-hide-users=true
+          allow-guest=false
+          LIGHTDM_EOF
+          
+          # Configure Edge autostart
+          echo "Configuring Edge autostart..."
+          mkdir -p /home/edge/.config/autostart
+          cat > /home/edge/.config/autostart/microsoft-edge.desktop << 'DESKTOP_EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Microsoft Edge
+          Comment=Microsoft Edge Browser
+          Exec=/usr/bin/microsoft-edge-stable --start-fullscreen --no-first-run --disable-features=TranslateUI
+          Icon=microsoft-edge
+          Terminal=false
+          StartupNotify=false
+          X-GNOME-Autostart-enabled=true
+          DESKTOP_EOF
+          
+          # Set Edge as default browser
+          echo "Setting Edge as default browser..."
+          update-alternatives --install /usr/bin/x-www-browser x-www-browser /usr/bin/microsoft-edge-stable 100
+          update-alternatives --set x-www-browser /usr/bin/microsoft-edge-stable
+          
+          # Create desktop shortcut
+          cat > /usr/share/applications/microsoft-edge.desktop << 'APP_EOF'
+          [Desktop Entry]
+          Version=1.0
+          Name=Microsoft Edge
+          GenericName=Web Browser
+          Comment=Access the Internet with Microsoft Edge
+          Exec=/usr/bin/microsoft-edge-stable %U
+          Icon=microsoft-edge
+          Terminal=false
+          Type=Application
+          Categories=Network;WebBrowser;
+          MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+          StartupWMClass=Microsoft-edge
+          APP_EOF
+          
+          # Create launcher for panel
+          mkdir -p /home/edge/.local/share/applications
+          cp /usr/share/applications/microsoft-edge.desktop /home/edge/.local/share/applications/
+          
+          # Configure XFCE panel (minimal)
+          mkdir -p /home/edge/.config/xfce4/xfconf/xfce-perchannel-xml
+          cat > /home/edge/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml << 'PANEL_EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <channel name="xfce4-panel" version="1.0">
+            <property name="configver" type="int" value="2"/>
+            <property name="panels" type="array">
+              <value type="int" value="1"/>
+              <property name="panel-1" type="empty">
+                <property name="position" type="string" value="p=8;x=0;y=0"/>
+                <property name="length" type="uint" value="100"/>
+                <property name="position-locked" type="bool" value="true"/>
+                <property name="size" type="uint" value="36"/>
+                <property name="plugin-ids" type="array">
+                  <value type="int" value="1"/>
+                  <value type="int" value="2"/>
+                  <value type="int" value="3"/>
+                  <value type="int" value="4"/>
+                </property>
+              </property>
+            </property>
+            <property name="plugins" type="empty">
+              <property name="plugin-1" type="string" value="applicationsmenu"/>
+              <property name="plugin-2" type="string" value="tasklist"/>
+              <property name="plugin-3" type="string" value="separator">
+                <property name="expand" type="bool" value="true"/>
+              </property>
+              <property name="plugin-4" type="string" value="clock"/>
+            </property>
+          </channel>
+          PANEL_EOF
+          
+          # Disable screen locking and power management
+          mkdir -p /home/edge/.config/xfce4/xfconf/xfce-perchannel-xml
+          cat > /home/edge/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-power-manager.xml << 'POWER_EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <channel name="xfce4-power-manager" version="1.0">
+            <property name="xfce4-power-manager" type="empty">
+              <property name="blank-on-ac" type="int" value="0"/>
+              <property name="dpms-on-ac-sleep" type="uint" value="0"/>
+              <property name="dpms-on-ac-off" type="uint" value="0"/>
+              <property name="lock-screen-suspend-hibernate" type="bool" value="false"/>
+              <property name="presentation-mode" type="bool" value="true"/>
+            </property>
+          </channel>
+          POWER_EOF
+          
+          # Set ownership
+          chown -R edge:edge /home/edge
+          
+          # Clean up
+          echo "Cleaning up..."
+          apt-get autoremove -y
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+          rm -rf /tmp/*
+          rm -rf /var/tmp/*
+          
+          # Remove cloud-init for faster boot
+          apt-get remove --purge cloud-init cloud-guest-utils cloud-initramfs-growroot -y
+          
+          # Regenerate initramfs
+          update-initramfs -u
+          
+          # Remove machine ID
+          rm -f /etc/machine-id
+          rm -f /var/lib/dbus/machine-id
+          
+          # Create a new machine-id on first boot
+          echo "uninitialized" > /etc/machine-id
+          
+          echo "✅ Customization completed successfully!"
+          CHROOT_EOF
+          
+          # Make script executable and run in chroot
+          chmod +x "${CHROOT_DIR}/customize-system.sh"
+          chroot "${CHROOT_DIR}" /bin/bash /customize-system.sh
+          
+          # Clean up chroot mounts
+          echo "🧹 Cleaning up chroot mounts..."
+          umount "${CHROOT_DIR}/run"
+          umount "${CHROOT_DIR}/sys"
+          umount "${CHROOT_DIR}/proc"
+          umount "${CHROOT_DIR}/dev/pts"
+          umount "${CHROOT_DIR}/dev"
+          
+          # Clean up chroot files
+          echo "🧹 Cleaning chroot files..."
+          rm -f "${CHROOT_DIR}/etc/resolv.conf"
+          rm -f "${CHROOT_DIR}/customize-system.sh"
+          
+          # Remove swap files
+          rm -f "${CHROOT_DIR}/var/cache/swap/*" 2>/dev/null || true
+          
+          # Create new filesystem.squashfs
+          echo "📦 Creating new squashfs..."
+          rm -f "${EXTRACT_DIR}/casper/filesystem.squashfs"
+          mksquashfs "${CHROOT_DIR}" "${EXTRACT_DIR}/casper/filesystem.squashfs" \
+            -comp xz \
+            -b 1M \
+            -noappend \
+            -no-progress
+          
+          # Update filesystem.size
+          echo "📏 Updating filesystem size..."
+          du -sx --block-size=1 "${CHROOT_DIR}" | cut -f1 > "${EXTRACT_DIR}/casper/filesystem.size"
+          
+          # Create manifest
+          echo "📋 Creating package manifest..."
+          chroot "${CHROOT_DIR}" dpkg-query -W --showformat='${Package} ${Version}\n' > "${EXTRACT_DIR}/casper/filesystem.manifest"
+          
+          # Update md5sum
+          echo "🔍 Updating checksums..."
+          cd "${EXTRACT_DIR}"
+          rm -f md5sum.txt
+          find . -type f -print0 | xargs -0 md5sum | grep -v "\./md5sum.txt" > md5sum.txt
+          
+          # Create new ISO
+          echo "🎨 Creating new ISO: ${OUTPUT_ISO}"
+          xorriso -as mkisofs \
+            -r \
+            -V "Ubuntu Edge-Centric" \
+            -o "../${OUTPUT_ISO}" \
+            -J -l \
+            -b isolinux/isolinux.bin \
+            -c isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            -eltorito-alt-boot \
+            -e boot/grub/efi.img \
+            -no-emul-boot \
+            -isohybrid-gpt-basdat \
+            -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+            .
+          
+          cd ..
+          
+          echo "✅ ISO created successfully: ${OUTPUT_ISO}"
+          echo "📊 Final size: $(stat -c%s "${OUTPUT_ISO}") bytes"
+          
+          # Clean up work directory
+          rm -rf "${WORK_DIR}"
+          SCRIPT_EOF
+          
+          chmod +x customize-iso.sh
+
+      - name: Run ISO Customization
+        run: |
+          echo "🛠️ Running ISO customization..."
+          sudo bash customize-iso.sh
+
+      - name: Verify Custom ISO
+        run: |
+          echo "✅ Verification of generated ISO..."
+          ls -lh "${{ steps.iso_info.outputs.CUSTOM_ISO }}"
+          file "${{ steps.iso_info.outputs.CUSTOM_ISO }}"
+          
+          ISO_SIZE=$(stat -c%s "${{ steps.iso_info.outputs.CUSTOM_ISO }}")
+          echo "📊 Final ISO size: $((ISO_SIZE / 1024 / 1024)) MB"
+          
+          if [ $ISO_SIZE -gt 1000000000 ]; then
+            echo "✅ ISO verification passed!"
+          else
+            echo "❌ ISO seems too small, something might be wrong"
+            exit 1
+          fi
+
+      - name: Upload Edge-Centric ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-ubuntu-iso
+          path: "${{ steps.iso_info.outputs.CUSTOM_ISO }}"
+          retention-days: 7
+          compression-level: 0
+
+      - name: Create Build Summary
+        if: always()
+        run: |
+          echo "# 🎉 Edge-Centric Ubuntu ISO Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📋 Build Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ubuntu Version:** ${{ github.event.inputs.ubuntu_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **ISO File:** ${{ steps.iso_info.outputs.CUSTOM_ISO }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Date:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 Features" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Microsoft Edge as default and only browser" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Auto-login for user 'edge' (password: 'edge')" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Edge starts automatically in fullscreen" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ XFCE desktop environment" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ No screen locking or power management" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Clean, minimal installation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📥 Download & Usage" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download the ISO from the Artifacts section above" >> $GITHUB_STEP_SUMMARY
+          echo "2. Flash to USB drive using [Etcher](https://www.balena.io/etcher/)" >> $GITHUB_STEP_SUMMARY
+          echo "3. Boot from USB and install" >> $GITHUB_STEP_SUMMARY
+          echo "4. System will automatically login and launch Edge in fullscreen" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔧 Default Credentials" >> $GITHUB_STEP_SUMMARY
+          echo "- **Username:** edge" >> $GITHUB_STEP_SUMMARY
+          echo "- **Password:** edge" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Built with GitHub Actions*" >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "🧹 Cleaning up..."
+          sudo rm -rf iso-work customize-iso.sh "${{ steps.iso_info.outputs.ISO_NAME }}" 2>/dev/null || true
