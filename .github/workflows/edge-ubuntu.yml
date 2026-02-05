@@ -1,0 +1,25 @@
+# .github/workflows/minimal-edge.yml
+name: Minimal Edge ISO Builder
+
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Download Ubuntu
+      run: |
+        wget -O ubuntu.iso https://releases.ubuntu.com/22.04.3/ubuntu-22.04.3-live-server-amd64.iso
+        
+    - name: Create custom ISO
+      run: |
+        # Just rename the ISO for now
+        cp ubuntu.iso edge-ubuntu-22.04.3.iso
+        
+    - name: Upload ISO
+      uses: actions/upload-artifact@v4
+      with:
+        name: edge-ubuntu-iso
+        path: edge-ubuntu-22.04.3.iso
+        retention-days: 5
