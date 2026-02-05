@@ -1,5 +1,5 @@
-# .github/workflows/edge-xfce-simple.yml
-name: Edge XFCE Ubuntu - Simple
+# .github/workflows/build-edge-autoinstall.yml
+name: Build Edge Ubuntu with Auto-Install
 
 on: [workflow_dispatch]
 
@@ -8,74 +8,124 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Step 1 - Download Ubuntu
+      - name: Install tools
         run: |
-          wget -O ubuntu.iso https://releases.ubuntu.com/22.04.3/ubuntu-22.04.3-live-server-amd64.iso
-          echo "✅ Downloaded Ubuntu"
+          sudo apt-get update
+          sudo apt-get install -y wget xorriso p7zip-full
           
-      - name: Step 2 - Create Edge ISO
+      - name: Download Ubuntu Server
         run: |
-          cp ubuntu.iso edge-xfce-ubuntu.iso
-          echo "✅ Created Edge XFCE ISO"
+          wget -q --show-progress -O ubuntu.iso https://releases.ubuntu.com/22.04.3/ubuntu-22.04.3-live-server-amd64.iso
           
-      - name: Step 3 - Create simple install script
+      - name: Create autoinstall ISO
         run: |
-          cat > INSTALL.md << 'EOF'
-          # Edge-Centric XFCE Ubuntu Setup
+          # Extract ISO
+          rm -rf iso-files
+          mkdir -p iso-files
+          7z x -oiso-files ubuntu.iso
           
-          ## Quick Installation
+          # Create autoinstall directory
+          mkdir -p iso-files/server
           
-          After installing Ubuntu Server, run:
-          
-          ```bash
-          # Update system
-          sudo apt update
-          sudo apt upgrade -y
-          
-          # Install XFCE
-          sudo apt install -y xfce4 xfce4-goodies lightdm
-          
-          # Install Microsoft Edge
-          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/microsoft.gpg
-          echo "deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main" | sudo tee /etc/apt/sources.list.d/microsoft-edge.list
-          sudo apt update
-          sudo apt install -y microsoft-edge-stable
-          
-          # Create user
-          sudo useradd -m -s /bin/bash edge
-          echo "edge:edge" | sudo chpasswd
-          sudo usermod -aG sudo edge
-          
-          # Auto-login
-          echo "[Seat:*]" | sudo tee /etc/lightdm/lightdm.conf.d/50-auto.conf
-          echo "autologin-user=edge" | sudo tee -a /etc/lightdm/lightdm.conf.d/50-auto.conf
-          
-          # Auto-start Edge
-          mkdir -p ~edge/.config/autostart
-          cat > ~edge/.config/autostart/edge.desktop << 'DESKTOP'
-          [Desktop Entry]
-          Type=Application
-          Name=Microsoft Edge
-          Exec=microsoft-edge-stable --start-fullscreen
-          Hidden=false
-          DESKTOP
-          sudo chown -R edge:edge ~edge/.config
-          
-          # Reboot
-          sudo reboot
-          ```
-          
-          ## Default Login
-          - Username: edge
-          - Password: edge
-          
-          Edge will start automatically in fullscreen.
+          # Create user-data for FULL auto-installation
+          cat > iso-files/server/user-data << 'EOF'
+          #cloud-config
+          autoinstall:
+            version: 1
+            
+            # User configuration
+            identity:
+              hostname: edge-ubuntu
+              username: edge
+              password: "edge"
+              
+            # Network
+            network:
+              version: 2
+              ethernets:
+                eth0:
+                  dhcp4: true
+                  
+            # Storage (automatic partitioning)
+            storage:
+              layout:
+                name: direct
+                
+            # Packages to install
+            packages:
+              - xfce4
+              - xfce4-goodies
+              - lightdm
+              - lightdm-gtk-greeter
+              - curl
+              - gnupg
+              - software-properties-common
+              
+            # Late commands (run AFTER installation)
+            late-commands:
+              # Install Microsoft Edge
+              - |
+                curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /target/etc/apt/trusted.gpg.d/microsoft.gpg
+                echo "deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main" > /target/etc/apt/sources.list.d/microsoft-edge.list
+              - curtin in-target --target=/target -- apt update
+              - curtin in-target --target=/target -- apt install -y microsoft-edge-stable
+              
+              # Configure auto-login
+              - |
+                mkdir -p /target/etc/lightdm/lightdm.conf.d
+                cat > /target/etc/lightdm/lightdm.conf.d/50-auto.conf << 'LIGHTDM'
+                [Seat:*]
+                autologin-user=edge
+                autologin-user-timeout=0
+                user-session=xfce
+                LIGHTDM
+                
+              # Create Edge autostart
+              - |
+                mkdir -p /target/home/edge/.config/autostart
+                cat > /target/home/edge/.config/autostart/edge.desktop << 'EDGE_DESKTOP'
+                [Desktop Entry]
+                Type=Application
+                Name=Microsoft Edge
+                Exec=microsoft-edge-stable --start-fullscreen
+                Hidden=false
+                X-GNOME-Autostart-enabled=true
+                EDGE_DESKTOP
+                chown -R 1000:1000 /target/home/edge/.config
+                
+              # Set Edge as default browser
+              - curtin in-target --target=/target -- update-alternatives --install /usr/bin/x-www-browser x-www-browser /usr/bin/microsoft-edge-stable 100
+              - curtin in-target --target=/target -- update-alternatives --set x-www-browser /usr/bin/microsoft-edge-stable
+              
+            # SSH (disabled for security)
+            ssh:
+              install-server: false
           EOF
           
-      - name: Step 4 - Upload
+          # Create meta-data
+          echo "instance-id: edge-ubuntu-auto" > iso-files/server/meta-data
+          echo "local-hostname: edge-ubuntu" >> iso-files/server/meta-data
+          
+          # Update boot configuration to use autoinstall
+          if [ -f iso-files/boot/grub/grub.cfg ]; then
+            # Add autoinstall to kernel command line
+            sed -i 's|---|autoinstall ds=nocloud;s=/cdrom/server/ ---|g' iso-files/boot/grub/grub.cfg
+          fi
+          
+          # Create new ISO
+          xorriso -as mkisofs \
+            -r -V "Edge Ubuntu Auto" \
+            -o edge-ubuntu-autoinstall.iso \
+            -J -l \
+            -b isolinux/isolinux.bin \
+            -c isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            iso-files/
+            
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: edge-xfce
-          path: |
-            edge-xfce-ubuntu.iso
-            INSTALL.md
+          name: edge-ubuntu-autoinstall
+          path: edge-ubuntu-autoinstall.iso
