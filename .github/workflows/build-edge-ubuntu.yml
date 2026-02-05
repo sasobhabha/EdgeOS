@@ -1,35 +1,41 @@
-# .github/workflows/edge-simple-fixed.yml
-name: Build Edge Ubuntu (Fixed)
+# .github/workflows/edge-ubuntu-simple.yml
+name: Edge Ubuntu Simple
 
 on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     
     steps:
+    - name: Install required packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget xorriso p7zip-full
+        
     - name: Download Ubuntu
       run: |
         wget -q --show-progress -O ubuntu.iso https://releases.ubuntu.com/22.04.3/ubuntu-22.04.3-live-server-amd64.iso
         
-    - name: Create Edge ISO
+    - name: Extract and prepare
       run: |
+        # Create directory
+        mkdir -p iso-files
+        
         # Extract ISO
-        rm -rf iso
-        mkdir -p iso
-        7z x -oiso ubuntu.iso
+        7z x -oiso-files ubuntu.iso
         
-        # Check what files we have
-        echo "📁 Files in boot/grub/:"
-        ls -la iso/boot/grub/ 2>/dev/null || echo "No boot/grub directory"
+        # Show what we extracted
+        echo "📁 Extracted files:"
+        ls -la iso-files/ | head -20
         
-        echo "📁 Files in isolinux/:"
-        ls -la iso/isolinux/ 2>/dev/null || echo "No isolinux directory"
+    - name: Create autoinstall config
+      run: |
+        # Create autoinstall directory
+        mkdir -p iso-files/server
         
-        # Create autoinstall config
-        mkdir -p iso/nocloud
-        cat > iso/nocloud/user-data << 'EOF'
+        # Create user-data
+        cat > iso-files/server/user-data << 'EOF'
         #cloud-config
         autoinstall:
           version: 1
@@ -43,30 +49,20 @@ jobs:
             - lightdm
             - curl
             - gnupg
-          late-commands:
-            - curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /target/etc/apt/trusted.gpg.d/microsoft.gpg
-            - echo "deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main" > /target/etc/apt/sources.list.d/microsoft-edge.list
-            - curtin in-target --target=/target -- apt update
-            - curtin in-target --target=/target -- apt install -y microsoft-edge-stable
-            - mkdir -p /target/etc/lightdm/lightdm.conf.d
-            - echo "[Seat:*]" > /target/etc/lightdm/lightdm.conf.d/50-auto.conf
-            - echo "autologin-user=edge" >> /target/etc/lightdm/lightdm.conf.d/50-auto.conf
-            - mkdir -p /target/home/edge/.config/autostart
-            - echo "[Desktop Entry]" > /target/home/edge/.config/autostart/edge.desktop
-            - echo "Type=Application" >> /target/home/edge/.config/autostart/edge.desktop
-            - echo "Name=Microsoft Edge" >> /target/home/edge/.config/autostart/edge.desktop
-            - echo "Exec=microsoft-edge-stable --start-fullscreen" >> /target/home/edge/.config/autostart/edge.desktop
-            - echo "Hidden=false" >> /target/home/edge/.config/autostart/edge.desktop
-            - chown -R 1000:1000 /target/home/edge/.config
         EOF
         
-        echo "instance-id: edgepc" > iso/nocloud/meta-data
+        # Create meta-data
+        echo "instance-id: edgepc" > iso-files/server/meta-data
         
-        # Update GRUB config (Ubuntu Server)
-        if [ -f iso/boot/grub/grub.cfg ]; then
-          echo "Updating grub.cfg..."
-          # Simple replacement for vmlinuz line
-          sed -i 's|/casper/vmlinuz quiet|/casper/vmlinuz quiet autoinstall ds=nocloud\\;s=/cdrom/nocloud/|g' iso/boot/grub/grub.cfg
+    - name: Create ISO
+      run: |
+        # Check if xorriso is available
+        if command -v xorriso >/dev/null 2>&1; then
+          echo "✅ xorriso is available"
+          xorriso --version
+        else
+          echo "❌ xorriso not found, installing..."
+          sudo apt-get install -y xorriso
         fi
         
         # Create ISO
@@ -74,21 +70,18 @@ jobs:
           -r \
           -V "Edge Ubuntu" \
           -o edge-ubuntu.iso \
-          -J -l \
-          -b isolinux/isolinux.bin \
+          -J \
           -c isolinux/boot.cat \
+          -b isolinux/isolinux.bin \
           -no-emul-boot \
           -boot-load-size 4 \
           -boot-info-table \
-          -eltorito-alt-boot \
-          -e boot/grub/efi.img \
-          -no-emul-boot \
-          iso/
+          iso-files/
           
         echo "✅ ISO created: edge-ubuntu.iso"
         ls -lh edge-ubuntu.iso
         
-    - name: Upload ISO
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: edge-ubuntu
