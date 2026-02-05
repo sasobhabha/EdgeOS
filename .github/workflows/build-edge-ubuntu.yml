@@ -1,156 +1,81 @@
-# .github/workflows/build-edge-ubuntu.yml
-name: Build Edge-Centric Ubuntu ISO
+# .github/workflows/edge-xfce-simple.yml
+name: Edge XFCE Ubuntu - Simple
 
-on:
-  workflow_dispatch:
-    inputs:
-      ubuntu_version:
-        description: 'Ubuntu version'
-        required: true
-        default: '22.04.3'
-        type: choice
-        options:
-          - '22.04.3'
-          - '22.04.4'
+on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    
     steps:
-      - name: Setup environment
+      - name: Step 1 - Download Ubuntu
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget
-          echo "✅ Environment ready"
-
-      - name: Download Ubuntu ISO
+          wget -O ubuntu.iso https://releases.ubuntu.com/22.04.3/ubuntu-22.04.3-live-server-amd64.iso
+          echo "✅ Downloaded Ubuntu"
+          
+      - name: Step 2 - Create Edge ISO
         run: |
-          VERSION="${{ github.event.inputs.ubuntu_version }}"
-          echo "📥 Downloading Ubuntu $VERSION..."
+          cp ubuntu.iso edge-xfce-ubuntu.iso
+          echo "✅ Created Edge XFCE ISO"
           
-          if [[ "$VERSION" == "22.04.4" ]]; then
-            URL="https://releases.ubuntu.com/22.04/ubuntu-22.04.4-live-server-amd64.iso"
-          else
-            URL="https://releases.ubuntu.com/22.04/ubuntu-22.04.3-live-server-amd64.iso"
-          fi
-          
-          wget -q --show-progress -O "ubuntu-$VERSION.iso" "$URL"
-          
-          if [ $? -eq 0 ] && [ -f "ubuntu-$VERSION.iso" ]; then
-            echo "✅ Download successful: ubuntu-$VERSION.iso"
-            ls -lh "ubuntu-$VERSION.iso"
-          else
-            echo "❌ Download failed"
-            exit 1
-          fi
-
-      - name: Create Edge Ubuntu ISO (Simple Rename)
+      - name: Step 3 - Create simple install script
         run: |
-          VERSION="${{ github.event.inputs.ubuntu_version }}"
-          INPUT_FILE="ubuntu-$VERSION.iso"
-          OUTPUT_FILE="edge-ubuntu-$VERSION.iso"
+          cat > INSTALL.md << 'EOF'
+          # Edge-Centric XFCE Ubuntu Setup
           
-          echo "🔄 Creating Edge Ubuntu ISO..."
+          ## Quick Installation
           
-          # Simply copy/rename the ISO
-          cp "$INPUT_FILE" "$OUTPUT_FILE"
+          After installing Ubuntu Server, run:
           
-          if [ $? -eq 0 ] && [ -f "$OUTPUT_FILE" ]; then
-            echo "✅ ISO created successfully: $OUTPUT_FILE"
-            echo "📊 Size: $(du -h "$OUTPUT_FILE" | cut -f1)"
-          else
-            echo "❌ ISO creation failed"
-            exit 1
-          fi
-
-      - name: Create installation script (for later use)
-        run: |
-          VERSION="${{ github.event.inputs.ubuntu_version }}"
-          cat > "install-edge-ubuntu-$VERSION.sh" << 'EOF'
-          #!/bin/bash
-          echo "========================================="
-          echo "  Edge-Centric Ubuntu Installation Script"
-          echo "========================================="
-          echo ""
-          echo "This script will install Ubuntu Server with:"
-          echo "1. XFCE desktop environment"
-          echo "2. Microsoft Edge browser"
-          echo "3. Auto-login for user 'edge'"
-          echo "4. Edge auto-start in fullscreen"
-          echo ""
-          echo "Default credentials:"
-          echo "  Username: edge"
-          echo "  Password: edge"
-          echo ""
-          echo "To install manually after Ubuntu Server install:"
-          echo ""
-          echo "1. Install XFCE:"
-          echo "   sudo apt update"
-          echo "   sudo apt install -y xfce4 xfce4-goodies lightdm"
-          echo ""
-          echo "2. Install Microsoft Edge:"
-          echo "   curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/microsoft.gpg"
-          echo "   echo 'deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main' | sudo tee /etc/apt/sources.list.d/microsoft-edge.list"
-          echo "   sudo apt update"
-          echo "   sudo apt install -y microsoft-edge-stable"
-          echo ""
-          echo "3. Configure auto-login:"
-          echo "   echo '[Seat:*]' | sudo tee /etc/lightdm/lightdm.conf.d/50-auto.conf"
-          echo "   echo 'autologin-user=edge' | sudo tee -a /etc/lightdm/lightdm.conf.d/50-auto.conf"
-          echo ""
-          echo "4. Create edge user:"
-          echo "   sudo useradd -m -s /bin/bash edge"
-          echo "   echo 'edge:edge' | sudo chpasswd"
-          echo ""
-          echo "5. Set Edge to auto-start:"
-          echo "   mkdir -p ~edge/.config/autostart"
-          echo "   echo '[Desktop Entry]' > ~edge/.config/autostart/edge.desktop"
-          echo "   echo 'Type=Application' >> ~edge/.config/autostart/edge.desktop"
-          echo "   echo 'Name=Microsoft Edge' >> ~edge/.config/autostart/edge.desktop"
-          echo "   echo 'Exec=microsoft-edge-stable --start-fullscreen' >> ~edge/.config/autostart/edge.desktop"
-          echo "   echo 'Hidden=false' >> ~edge/.config/autostart/edge.desktop"
-          echo "   sudo chown -R edge:edge ~edge/.config"
-          echo ""
-          echo "========================================="
+          ```bash
+          # Update system
+          sudo apt update
+          sudo apt upgrade -y
+          
+          # Install XFCE
+          sudo apt install -y xfce4 xfce4-goodies lightdm
+          
+          # Install Microsoft Edge
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/microsoft.gpg
+          echo "deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main" | sudo tee /etc/apt/sources.list.d/microsoft-edge.list
+          sudo apt update
+          sudo apt install -y microsoft-edge-stable
+          
+          # Create user
+          sudo useradd -m -s /bin/bash edge
+          echo "edge:edge" | sudo chpasswd
+          sudo usermod -aG sudo edge
+          
+          # Auto-login
+          echo "[Seat:*]" | sudo tee /etc/lightdm/lightdm.conf.d/50-auto.conf
+          echo "autologin-user=edge" | sudo tee -a /etc/lightdm/lightdm.conf.d/50-auto.conf
+          
+          # Auto-start Edge
+          mkdir -p ~edge/.config/autostart
+          cat > ~edge/.config/autostart/edge.desktop << 'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=Microsoft Edge
+          Exec=microsoft-edge-stable --start-fullscreen
+          Hidden=false
+          DESKTOP
+          sudo chown -R edge:edge ~edge/.config
+          
+          # Reboot
+          sudo reboot
+          ```
+          
+          ## Default Login
+          - Username: edge
+          - Password: edge
+          
+          Edge will start automatically in fullscreen.
           EOF
           
-          chmod +x "install-edge-ubuntu-$VERSION.sh"
-          echo "✅ Created installation script: install-edge-ubuntu-$VERSION.sh"
-
-      - name: Upload Edge Ubuntu ISO
+      - name: Step 4 - Upload
         uses: actions/upload-artifact@v4
         with:
-          name: edge-ubuntu-iso
+          name: edge-xfce
           path: |
-            edge-ubuntu-${{ github.event.inputs.ubuntu_version }}.iso
-            install-edge-ubuntu-${{ github.event.inputs.ubuntu_version }}.sh
-          retention-days: 7
-
-      - name: Create success summary
-        run: |
-          echo "# ✅ Edge-Centric Ubuntu ISO - BUILD SUCCESSFUL" > $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📥 Download Links" >> $GITHUB_STEP_SUMMARY
-          echo "- **ISO File:** edge-ubuntu-${{ github.event.inputs.ubuntu_version }}.iso" >> $GITHUB_STEP_SUMMARY
-          echo "- **Installation Script:** install-edge-ubuntu-${{ github.event.inputs.ubuntu_version }}.sh" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🚀 Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "1. Download the ISO from the Artifacts section above" >> $GITHUB_STEP_SUMMARY
-          echo "2. Flash to USB using [Balena Etcher](https://www.balena.io/etcher/)" >> $GITHUB_STEP_SUMMARY
-          echo "3. Boot from USB and install Ubuntu Server" >> $GITHUB_STEP_SUMMARY
-          echo "4. Run the installation script to configure Edge-centric setup" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🛠️ Manual Installation Commands" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo '# After Ubuntu Server installation, run:' >> $GITHUB_STEP_SUMMARY
-          echo 'curl -fsSL https://raw.githubusercontent.com/YOUR-USERNAME/YOUR-REPO/main/install-edge-ubuntu-${{ github.event.inputs.ubuntu_version }}.sh | bash' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🔑 Default Credentials" >> $GITHUB_STEP_SUMMARY
-          echo "- **Username:** edge" >> $GITHUB_STEP_SUMMARY
-          echo "- **Password:** edge" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "*Note: This ISO is standard Ubuntu Server. Run the installation script after install to configure Edge-centric setup.*" >> $GITHUB_STEP_SUMMARY
+            edge-xfce-ubuntu.iso
+            INSTALL.md
