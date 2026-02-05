@@ -1,5 +1,5 @@
-# .github/workflows/edge-no-chroot.yml
-name: Build Edge Ubuntu (No Chroot)
+# .github/workflows/edge-simple-fixed.yml
+name: Build Edge Ubuntu (Fixed)
 
 on: [workflow_dispatch]
 
@@ -13,13 +13,21 @@ jobs:
       run: |
         wget -q --show-progress -O ubuntu.iso https://releases.ubuntu.com/22.04.3/ubuntu-22.04.3-live-server-amd64.iso
         
-    - name: Create Autoinstall ISO
+    - name: Create Edge ISO
       run: |
         # Extract ISO
+        rm -rf iso
         mkdir -p iso
         7z x -oiso ubuntu.iso
         
-        # Create user-data for autoinstall
+        # Check what files we have
+        echo "📁 Files in boot/grub/:"
+        ls -la iso/boot/grub/ 2>/dev/null || echo "No boot/grub directory"
+        
+        echo "📁 Files in isolinux/:"
+        ls -la iso/isolinux/ 2>/dev/null || echo "No isolinux directory"
+        
+        # Create autoinstall config
         mkdir -p iso/nocloud
         cat > iso/nocloud/user-data << 'EOF'
         #cloud-config
@@ -54,13 +62,17 @@ jobs:
         
         echo "instance-id: edgepc" > iso/nocloud/meta-data
         
-        # Update boot configs
-        sed -i 's|---|autoinstall ds=nocloud;s=/cdrom/nocloud/ ---|g' iso/boot/grub/grub.cfg
-        sed -i 's|---|autoinstall ds=nocloud;s=/cdrom/nocloud/ ---|g' iso/isolinux/txt.cfg
+        # Update GRUB config (Ubuntu Server)
+        if [ -f iso/boot/grub/grub.cfg ]; then
+          echo "Updating grub.cfg..."
+          # Simple replacement for vmlinuz line
+          sed -i 's|/casper/vmlinuz quiet|/casper/vmlinuz quiet autoinstall ds=nocloud\\;s=/cdrom/nocloud/|g' iso/boot/grub/grub.cfg
+        fi
         
         # Create ISO
         xorriso -as mkisofs \
-          -r -V "Edge Ubuntu" \
+          -r \
+          -V "Edge Ubuntu" \
           -o edge-ubuntu.iso \
           -J -l \
           -b isolinux/isolinux.bin \
@@ -73,8 +85,11 @@ jobs:
           -no-emul-boot \
           iso/
           
+        echo "✅ ISO created: edge-ubuntu.iso"
+        ls -lh edge-ubuntu.iso
+        
     - name: Upload ISO
       uses: actions/upload-artifact@v4
       with:
-        name: edge-ubuntu-auto
+        name: edge-ubuntu
         path: edge-ubuntu.iso
